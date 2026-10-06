@@ -1,0 +1,134 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum JobStatus {
+  CREATED
+  QUEUED
+  SCHEDULED
+  RUNNING
+  RETRYING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum JobPriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+}
+
+enum JobType {
+  EMAIL_SIMULATION
+  REPORT_GENERATION
+  DATA_PROCESSING
+  IMAGE_PROCESSING_SIMULATION
+  CUSTOM_DELAY
+}
+
+enum WorkerStatus {
+  ONLINE
+  BUSY
+  OFFLINE
+}
+
+enum ExecutionStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(USER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  jobs Job[]
+
+  @@map("users")
+}
+
+model Job {
+  id            String      @id @default(uuid())
+  userId        String
+  type          JobType
+  payload       Json        @default("{}")
+  priority      JobPriority @default(NORMAL)
+  status        JobStatus   @default(CREATED)
+  scheduledAt   DateTime?
+  attempts      Int         @default(0)
+  maxAttempts   Int         @default(3)
+  result        Json?
+  errorMessage  String?
+  idempotencyKey String?
+  bullJobId     String?
+  createdAt     DateTime    @default(now())
+  startedAt     DateTime?
+  completedAt   DateTime?
+  updatedAt     DateTime    @updatedAt
+
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  executions JobExecution[]
+
+  @@unique([userId, idempotencyKey], name: "jobs_userId_idempotencyKey_key")
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([priority])
+  @@index([scheduledAt])
+  @@map("jobs")
+}
+
+model JobExecution {
+  id            String          @id @default(uuid())
+  jobId         String
+  workerId      String?
+  attemptNumber Int
+  status        ExecutionStatus
+  startedAt     DateTime        @default(now())
+  completedAt   DateTime?
+  durationMs    Int?
+  result        Json?
+  errorMessage  String?
+  createdAt     DateTime        @default(now())
+
+  job    Job     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  worker Worker? @relation(fields: [workerId], references: [id], onDelete: SetNull)
+
+  @@index([jobId])
+  @@map("job_executions")
+}
+
+model Worker {
+  id             String       @id @default(uuid())
+  workerName     String       @unique
+  status         WorkerStatus @default(ONLINE)
+  hostname       String
+  concurrency    Int          @default(2)
+  jobsProcessed  Int          @default(0)
+  jobsFailed     Int          @default(0)
+  lastHeartbeat  DateTime     @default(now())
+  startedAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  executions JobExecution[]
+
+  @@index([status])
+  @@index([lastHeartbeat])
+  @@map("workers")
+}

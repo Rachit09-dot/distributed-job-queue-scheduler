@@ -1,0 +1,60 @@
+# ── Secrets ───────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── Dependencies ──────────────────────────────
+node_modules/
+**/node_modules/
+
+# ── Build outputs ─────────────────────────────
+dist/
+build/
+**/dist/
+client/dist/
+server/dist/
+worker/dist/
+
+# ── Logs ──────────────────────────────────────
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── OS ────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+Desktop.ini
+
+# ── IDE ───────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Testing ───────────────────────────────────
+coverage/
+**/coverage/
+
+# ── Prisma ────────────────────────────────────
+# Keep migrations in VCS, but ignore generated client
+# (it is regenerated during npm install / docker build)
+
+# ── Docker ────────────────────────────────────
+# Docker Compose may create .env files for overrides
+docker-compose.override.yml
+
+# ── Misc ──────────────────────────────────────
+*.tsbuildinfo
+.turbo/
+.cache/
+tmp/
+temp/
+
+# ── Stray files ───────────────────────────────
+_tmp_find_err.js
+docker-build.log

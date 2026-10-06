@@ -1,0 +1,225 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: jq-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: jobqueue
+      POSTGRES_USER: jobqueue
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jobqueue_secret}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobqueue -d jobqueue"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - jq-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: jq-redis
+    restart: unless-stopped
+    # appendonly yes — persist queue data to disk on every write (AOF)
+    # maxmemory-policy noeviction — never silently drop queue entries under memory pressure;
+    #   instead return an error so BullMQ can handle it. This is critical for queue reliability.
+    command: >
+      redis-server
+      --save 20 1
+      --loglevel warning
+      --requirepass ${REDIS_PASSWORD:-redis_secret}
+      --appendonly yes
+      --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "redis-cli",
+          "--no-auth-warning",
+          "-a",
+          "${REDIS_PASSWORD:-redis_secret}",
+          "ping"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - jq-network
+
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+      target: builder   # use builder stage — it has prisma engines + ts-node + source files
+
+    # All files live at /app (not /app/server) in the builder stage.
+    command:
+      - sh
+      - -c
+      - |
+        ./node_modules/.bin/prisma migrate deploy --config=./prisma/prisma.config.ts
+        ./node_modules/.bin/ts-node \
+          --project ./prisma/tsconfig.json \
+          --transpile-only \
+          ./prisma/seed.ts
+
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://jobqueue:${POSTGRES_PASSWORD:-jobqueue_secret}@postgres:5432/jobqueue
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    restart: "no"
+
+    networks:
+      - jq-network
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    container_name: jq-backend
+    restart: unless-stopped
+
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+
+      DATABASE_URL: postgresql://jobqueue:${POSTGRES_PASSWORD:-jobqueue_secret}@postgres:5432/jobqueue
+
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379
+
+      # REQUIRED: override this in .env — must be ≥32 chars or server refuses to start
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-jwt-secret-32chars}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:80}
+
+      MAX_JOB_ATTEMPTS: ${MAX_JOB_ATTEMPTS:-3}
+      RETRY_BASE_DELAY_MS: ${RETRY_BASE_DELAY_MS:-2000}
+
+      RATE_LIMIT_WINDOW_MS: 900000
+      RATE_LIMIT_MAX: 100
+
+      LOG_LEVEL: info
+
+    ports:
+      - "4000:4000"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:4000/health || exit 1"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+    networks:
+      - jq-network
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+
+    environment:
+      NODE_ENV: production
+
+      DATABASE_URL: postgresql://jobqueue:${POSTGRES_PASSWORD:-jobqueue_secret}@postgres:5432/jobqueue
+
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secret}@redis:6379
+
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      HEARTBEAT_INTERVAL_MS: 10000
+
+      MAX_JOB_ATTEMPTS: ${MAX_JOB_ATTEMPTS:-3}
+      RETRY_BASE_DELAY_MS: ${RETRY_BASE_DELAY_MS:-2000}
+
+      LOG_LEVEL: info
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+    networks:
+      - jq-network
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.client
+
+    container_name: jq-frontend
+    restart: unless-stopped
+
+    environment:
+      VITE_API_URL: /api
+      VITE_SOCKET_URL: ""
+
+    ports:
+      - "80:80"
+
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost/health || exit 1"
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+    networks:
+      - jq-network
+
+
+volumes:
+  postgres_data:
+    driver: local
+
+  redis_data:
+    driver: local
+
+
+networks:
+  jq-network:
+    driver: bridge
